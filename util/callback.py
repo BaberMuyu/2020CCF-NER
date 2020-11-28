@@ -109,3 +109,15 @@ class FGM(object):
                 assert name in self.backup
                 param.data = self.backup[name]
         self.backup = {}
+
+
+def re_init_bert(bert_model, layer_list):
+    """
+    :param bert_model:
+    :param layer_list: [12,11,10,9,8,7]
+    :return:
+    """
+    for name, param in bert_model.named_parameters():
+        for i in layer_list:
+            if str(i) in name:
+                param.data = None

@@ -183,7 +183,7 @@ class MyBertTokenizer(BertTokenizer):
             if text_index >= len(text) or decode_index >= len(text_decoded):
                 break
 
-        if decode2raw_map[-1] == 0:
+        if decode2raw_map[-1] == 0 and len(decode2raw_map) > 1:
             warnings.warn('token map')
 
         raw2decode_map = [0] * len(text)

@@ -82,7 +82,7 @@ class FastPrototype(nn.Module):
         # output
         output_inputs = {'text_vec': fusion_outputs['text_vec'],
                          'mask': inputs['mask']}
-        result = self.output(output_inputs, en_decode=en_decode)
+        result = self.output(output_inputs, en_pred=en_decode)
 
         return result
 
@@ -115,7 +115,7 @@ class CasPrototype(nn.Module):
         self.output = OutputOBIE(self.config.output)
         self.layer_list.append(self.output)
 
-        self.output_type = OutputType(self.config.output)
+        self.output_type = OutputType(self.config.output_type)
         self.layer_list.append(self.output_type)
 
         self.params = {}
@@ -163,7 +163,6 @@ class CasPrototype(nn.Module):
                           'mask': inputs['mask'],
                           }
         encoder_outputs = self.text_encoder(encoder_inputs)
-
         # fusion
         if self.config.fusion.fusion == FusionE.flat:
             fusion_inputs = {'char_word_vec': encoder_outputs['char_word_vec'],
@@ -195,7 +194,7 @@ class CasPrototype(nn.Module):
     def cal_loss(self, results, targets, mask):
         entity_loss = self.output.cal_loss(results['entity'], targets['entity'], mask)
         category_loss = self.output_type.cal_loss(results['type_gt'], targets['type'])
-        _loss = entity_loss + category_loss * 0.01
+        _loss = entity_loss + category_loss * 0.1
         return _loss
 
     def find_entity(self, results):
@@ -224,6 +223,7 @@ class CasPrototype(nn.Module):
         return indice
 
 
+
 class CombineModel(nn.Module):
     def __init__(self, config, crf_params):
         super(CombineModel, self).__init__()
@@ -246,8 +246,4 @@ class CombineModel(nn.Module):
     def find_entity(self, text, pred):
         return self.output.find_entity(text, pred)
 
-
-class CombineCasModel(nn.Module):
-    def __init__(self, config, crf_params):
-        self.entity_pred = CombineModel(config, crf_params)
 

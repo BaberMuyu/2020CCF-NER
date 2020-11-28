@@ -15,8 +15,8 @@ def count_item(x):
     part_sum = 0
     for i, n in enumerate(y):
         part_sum += n
-        rate.append((i, part_sum / ssum))
-    return y, rate
+        rate.append((i, n, round(part_sum / ssum, 6), round(n / ssum, 6)))
+    return rate
 
 
 def json_dump(data, file):
@@ -168,39 +168,3 @@ class TimeStatistic(object):
     def show(self):
         for key in self.data.keys():
             print("{}: {}".format(key, self.data[key] / self.total_time))
-
-
-import re
-
-
-def get_email(text):
-    if '@' not in text:
-        return []
-    pattern = re.compile(
-        r"(([a-z]+[0-9]*[-_.]?[0-9]*){1,4}|[0-9]{,16})(\@|\#)[a-z0-9-]*(\.[a-z0-9]{1,8}){,4}(?:\.cn|\.com|\.tw|\.net|\.asia|\.org|\.edu|\.hk|\.au|\.tv)+",
-        re.IGNORECASE)
-    h = pattern.finditer(text)
-    emails = []
-    for i in h:
-        print(i.span(), i.group())
-        emails.append({'privacy': i.group(),
-                       'category': 'email',
-                       'pos_b': i.span()[0],
-                       'pos_e': i.span()[1]})
-    return emails
-
-def get_qq(text):
-    pattern = re.compile(r"q{1,2}[^0-9.]{,6}[0-9]{6,12}", re.IGNORECASE)
-    h = pattern.finditer(text, )
-    qq = []
-    for i in h:
-        qq_num = re.search(r"[0-9]{6,12}$", i.group()).group()
-        qq.append({'privacy': qq_num,
-                   'category': 'QQ',
-                   'pos_b': i.span()[1] - len(qq_num),
-                   'pos_e': i.span()[1] - 1})
-    return qq
-
-
-if __name__ == '__main__':
-    get_email("坊廚神食四坊;工作聯系:kimmykwanshan@yahoo.com.hk，TVB艺")

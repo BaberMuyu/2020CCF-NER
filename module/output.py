@@ -9,12 +9,21 @@ LabelE = Enum('LabelE', ('Nobie', 'Tobie', 'Cobie', 'point'))
 
 class OutputConfig(object):
     def __init__(self):
-        self.label = LabelE.Nobie
-        self.crf_strict = True
         self.num_types = None
-
-        self.only_crf = False
         self.in_feat_size = None
+
+    def __str__(self):
+        string = ""
+        string += "num_types: {}\n".format(self.num_types)
+        return string
+
+
+class OutputConfigObie(OutputConfig):
+    def __init__(self):
+        super(OutputConfigObie, self).__init__()
+        self.label = LabelE.Nobie
+        self.only_crf = False
+        self.crf_strict = True
 
     @property
     def num_tags(self):
@@ -26,9 +35,22 @@ class OutputConfig(object):
             return 4
 
     def __str__(self):
-        string = ""
+        string = super(OutputConfigObie, self).__str__()
         string += "label: {}\n".format(self.label)
         string += "crf_strict: {}\n".format(self.crf_strict)
+        return string
+
+
+class OutputConfigPoint(OutputConfig):
+    def __init__(self):
+        super(OutputConfigPoint, self).__init__()
+        self.label = LabelE.point
+        self.only_crf = False
+        self.crf_strict = True
+
+    def __str__(self):
+        string = super(OutputConfigPoint, self).__str__()
+        string += "label: {}\n".format(self.label)
         return string
 
 
@@ -109,6 +131,8 @@ class OutputOBIE(Output):
         return emission
 
     def cal_loss(self, preds, targets, mask):
+        if 'loss_mask' in targets:
+            mask = targets['loss_mask']
         emission = preds['emission']
         y_true = targets['y_true']
         mask = mask.unsqueeze(dim=1)
@@ -130,17 +154,17 @@ class OutputOBIE(Output):
             e_i = -1
             for pos, token in enumerate(ps):
                 if self.config.crf_strict:
-                    if token == 1:
+                    if token == 0:  # O
                         if e_s != -1:
-                            add_entity(e_s, e_s)
+                            add_entity(e_s, pos-1)
+                            e_s = -1
+                    if token == 1:  # B
+                        if e_s != -1:
+                            add_entity(e_s, pos-1)
                         e_s = pos
-                    if token == 3:
+                    if token == 3:  # E
                         if e_s != -1:
                             add_entity(e_s, pos)
-                            e_s = -1
-                    if token == 0:
-                        if e_s != -1:
-                            add_entity(e_s, e_s)
                             e_s = -1
                 else:
                     if token == 1:
@@ -189,7 +213,7 @@ class OutputOBIE(Output):
                         else:
                             s, e, c = pos, pos, e_cate
                     elif e_token == 1:  # I
-                        if s != -1 and c == e_cate:
+                        if s != -1: # and c == e_cate:
                             e = pos
                         else:
                             s, e, c = -1, -1, -1
@@ -284,7 +308,8 @@ class OutputPoint(Output):
 
     def cal_emission(self, text_vec):
         emission = self.emission_linear(text_vec)
-        emission = nn.functional.sigmoid(emission)
+        # emission = nn.functional.sigmoid(emission)
+        emission = nn.functional.softmax(emission, dim=-1)
         emission = emission.permute([0, 2, 1])  # B L F -> B F L
         return emission
 

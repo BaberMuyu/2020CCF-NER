@@ -21,6 +21,7 @@ class FusionConfig(object):
         self.en_ffd = True
         self.layer_norm_eps = 1e-12
         self.intermediate_size = 640
+        self.dropout = 0.1
 
         self.in_feat_size = None
         self.out_feat_size = self.hidden_size
@@ -117,6 +118,7 @@ class LinearFusion(nn.Module):
         self.config = config
         self.linear = nn.Linear(self.config.in_feat_size, self.config.out_feat_size)
         self.params = {'other': [p for p in self.linear.parameters()]}
+        self.dropout = nn.Dropout(config.dropout)
 
     def get_params(self):
         return self.params
@@ -125,4 +127,5 @@ class LinearFusion(nn.Module):
         text_vec = inputs['text_vec']
         text_vec = self.linear(text_vec)
         text_vec = nn.functional.relu(text_vec)
+        text_vec = self.dropout(text_vec)
         return {'text_vec': text_vec}

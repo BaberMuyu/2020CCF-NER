@@ -116,6 +116,7 @@ class NERModelFitting(object):
             text_length = len(sample['text'])
             text.append(sample['text'] + [0] * (max_len - text_length))
             text_mask.append([1] * text_length + [0] * (max_len - text_length))
+
         text = torch.tensor(text)
         text_mask = torch.tensor(text_mask).float()
         result[0] = {'text': [text, True], 'mask': [text_mask, True]}
@@ -184,17 +185,20 @@ class NERModelFitting(object):
                         if bioe != 0:
                             return line
                     line[s] = 1 + t * 3
-                    line[s + 1:e] = 2 + t * 3
+                    line[s + 1:e] = 2 #+ t * 3
                     line[e] = 3 + t * 3
                     return line
 
         inputs, others = self.collate_fn_test(batch)
         max_len = inputs['mask'][0].size(1)
 
+        loss_mask = []
         ner_label = []
         raw_entity = []
 
         for batch_index, sample in enumerate(batch):
+            if sample['loss_mask'] is not None:
+                loss_mask.append(sample['loss_mask'] + [0] * (max_len - len(sample['loss_mask'])))
             _ner_label = None
             if self.config.output.label == LabelE.Tobie:
                 _ner_label = np.zeros([1, max_len])
@@ -224,9 +228,9 @@ class NERModelFitting(object):
             ner_label = torch.tensor(ner_label).long()
         else:  # point
             ner_label = torch.tensor(ner_label).float()
-
+        loss_mask = torch.tensor(loss_mask).long()
         others.update({'raw_entity': raw_entity})
-        return inputs, {'y_true': ner_label}, others
+        return inputs, {'y_true': ner_label, 'loss_mask': loss_mask}, others
 
     def get_collate_fn(self, mode='train'):
         if mode == 'train' or mode == 'dev':
@@ -275,6 +279,7 @@ class NERModelFitting(object):
 
         ending_flag = False
         detach_flag = False
+        swa_flag = False
         fgm = FGM(model)
         for epoch in range(epoch_start, config.epochs):
             for step, (inputs, targets, others) in enumerate(train_dataloader):
@@ -341,22 +346,22 @@ class NERModelFitting(object):
                         # if logs['dev_f1'] > 0.88:
                         shutil.move(ROOT_WEIGHT + 'temp_model.ckpt',
                                     "{}/auto_save_{:.6f}.ckpt".format(ROOT_WEIGHT, logs['dev_f1']))
-                        # if epoch > 10:
-                        #     optimizer.update_swa()
+                        if (epoch > 2 or swa_flag) and config.en_swa:
+                            optimizer.update_swa()
+                            swa_flag = True
                         early_stop, best_score = early_stopping(logs['dev_f1'])
 
                         # test =========================================================================================
                         if (epoch + 1 == config.epochs and step + 1 == train_steps) or early_stop:
                             ending_flag = True
-                            model.load_state_dict(
-                                torch.load("{}/auto_save_{:.6f}.ckpt".format(ROOT_WEIGHT, best_score)))
-                            # optimizer.swap_swa_sgd()
-                            # optimizer.bn_update(train_dataloader, model)
+                            if swa_flag:
+                                optimizer.swap_swa_sgd()
+                                optimizer.bn_update(train_dataloader, model)
 
                         model.train()
                 aux.show_log(epoch, step, logs)
                 if ending_flag:
-                    return
+                    return best_score
 
     def eval(self, eval_inputs):
         config = self.config.fitting
@@ -458,18 +463,16 @@ class NERCasModelFitting(object):
         result = [dict(), dict()]
 
         max_len = 0
-        new_batch = []
         for sample in batch:
             max_len = max_len if max_len > len(sample['text']) else len(sample['text'])
 
             iid.append(sample['id'])
             sub_id.append(sample['sub_id'])
             raw_text.append(sample['text'])
-            if self.config.fitting.entity_mask_rate > 0:
-                new_batch.append(random_mask(sample, self.config.fitting._entity_mask_rate))
-            else:
-                new_batch.append(sample)
-        batch = new_batch
+            # if self.config.fitting.entity_mask_rate > 0:
+            #     new_batch.append(random_mask(sample, self.config.fitting._entity_mask_rate))
+            # else:
+            #     new_batch.append(sample)
         result[1] = {'id': iid, 'sub_id': sub_id, 'raw_text': raw_text}
 
         for sample in batch:
@@ -667,10 +670,9 @@ class NERCasModelFitting(object):
                         self.config.fitting._entity_mask_rate = self.config.fitting.entity_mask_rate
                         for key in dev_result.keys():
                             logs['dev_' + key] = dev_result[key]
-                        if logs['dev_a_f1'] > 0.89 or True:
-                            shutil.move(ROOT_WEIGHT + 'temp_model.ckpt',
-                                        "{}/auto_save_{:.6f}.ckpt".format(ROOT_WEIGHT, logs['dev_a_f1']))
-                        if (epoch > 14 or logs['dev_a_f1'] > 0.920 or swa_start) and config.en_swa:
+                        shutil.move(ROOT_WEIGHT + 'temp_model.ckpt',
+                                    "{}/auto_save_{:.6f}.ckpt".format(ROOT_WEIGHT, logs['dev_a_f1']))
+                        if (epoch > 2 or logs['dev_a_f1'] > 0.79 or swa_start) and config.en_swa:
                             swa_start = True
                             optimizer.update_swa()
                         early_stop, best_score = early_stopping(logs['dev_a_f1'])
@@ -905,3 +907,268 @@ class CombineFitting(object):
                                           'entities': entities})
         self.gen_res(entity_result, type_data, outfile, keep_token=keep_token)
         return entity_result
+
+
+class TypeModelFitting(object):
+    def __init__(self, config, gen_res_fn):
+        self.config = config
+        self.gen_res = gen_res_fn
+
+    def collate_fn_test(self, batch):
+        text = []
+        text_mask = []
+        entity_indice = []
+
+        iid = []
+        sub_id = []
+        raw_text = []
+        entities = []
+
+        result = [dict(), dict()]
+
+        max_len = 0
+        for sample in batch:
+            max_len = max_len if max_len > len(sample['text']) else len(sample['text'])
+
+            iid.append(sample['id'])
+            sub_id.append(sample['sub_id'])
+            raw_text.append(sample['text'])
+            entities_ = []
+            for entity in sample['entities']:
+                entities_.append([0, entity['pos_b'], entity['pos_e']])
+            entities.append(entities_)
+        result[1] = {'id': iid, 'sub_id': sub_id, 'raw_text': raw_text, 'entities': entities}
+
+        base = 0
+        for sample in batch:
+            text_length = len(sample['text'])
+            text.append(sample['text'] + [0] * (max_len - text_length))
+            text_mask.append([1] * text_length + [0] * (max_len - text_length))
+
+            for entity in sample['entities']:
+                entity_indice.extend([entity['pos_b'] + base, entity['pos_e'] + base])
+            base += max_len
+
+        text = torch.tensor(text)
+        text_mask = torch.tensor(text_mask).float()
+        entity_indice = torch.tensor(entity_indice).long()
+        result[0] = {'text': [text, True], 'mask': [text_mask, True], 'indice': [entity_indice, True]}
+        return result
+
+    def collate_fn_train(self, batch):
+
+        inputs, others = self.collate_fn_test(batch)
+
+        type_label = []
+        for sample in batch:
+            for entity in sample['entities']:
+                type_label.append(entity['category'])
+
+        type_label_t = torch.tensor(type_label).long()
+        targets = {'y_true': type_label_t}
+        others['label'] = type_label
+        return inputs, targets, others
+
+    def get_collate_fn(self, mode='train'):
+        if mode == 'train' or mode == 'dev':
+            return self.collate_fn_train
+        elif mode == 'test':
+            return self.collate_fn_test
+
+    def set_type(self, label, entities):
+        entities = copy.deepcopy(entities)
+        count = 0
+        for es in entities:
+            for e in es:
+                e[0] = label[count]
+                count += 1
+        return entities
+
+    def cal_acc(self, pred, target):
+        pred = np.array(pred)
+        target = np.array(target)
+        cn = np.equal(pred, target).sum()
+        n = target.shape[0]
+        return cn, n
+
+    def train(self, train_inputs):
+        config = self.config.fitting
+        model = train_inputs['model']
+        train_data = train_inputs['train_data']
+        dev_data = train_inputs['dev_data']
+        epoch_start = train_inputs['epoch_start']
+
+        train_steps = int((len(train_data) + config.batch_size - 1) / config.batch_size)
+        train_dataloader = DataLoader(train_data,
+                                      batch_size=config.batch_size,
+                                      collate_fn=self.get_collate_fn('train'),
+                                      shuffle=True)
+        params_lr = []
+        for key, value in model.get_params().items():
+            if key in config.lr:
+                params_lr.append({"params": value, 'lr': config.lr[key]})
+        optimizer = torch.optim.Adam(params_lr)
+        optimizer = SWA(optimizer)
+
+        early_stopping = EarlyStopping(model, ROOT_WEIGHT, mode='max', patience=3)
+        learning_schedual = LearningSchedual(optimizer, config.epochs, config.end_epoch, train_steps, config.lr)
+
+        aux = ModelAux(self.config, train_steps)
+        moving_log = MovingData(window=100)
+
+        ending_flag = False
+        detach_flag = False
+        swa_flag = False
+        fgm = FGM(model)
+        for epoch in range(epoch_start, config.epochs):
+            for step, (inputs, targets, others) in enumerate(train_dataloader):
+                inputs = dict([(key, value[0].cuda() if value[1] else value[0]) for key, value in inputs.items()])
+                targets = dict([(key, value.cuda()) for key, value in targets.items()])
+                if epoch > 0 and step == 0:
+                    model.detach_ptm(False)
+                    detach_flag = False
+                if epoch == 0 and step == 0:
+                    model.detach_ptm(True)
+                    detach_flag = True
+                # train ================================================================================================
+                preds = model(inputs, en_pred=config.verbose)
+                loss = model.cal_loss(preds, targets)
+                loss.backward()
+
+                # 对抗训练
+                if (not detach_flag) and config.en_fgm:
+                    fgm.attack(emb_name='word_embeddings')  # 在embedding上添加对抗扰动
+                    preds_adv = model(inputs, en_pred=False)
+                    loss_adv = model.cal_loss(preds_adv, targets)
+                    loss_adv.backward()  # 反向传播，并在正常的grad基础上，累加对抗训练的梯度
+                    fgm.restore(emb_name='word_embeddings')  # 恢复embedding参数
+
+                # torch.nn.utils.clip_grad_norm(model.parameters(), 1)
+                optimizer.step()
+                optimizer.zero_grad()
+                with torch.no_grad():
+                    logs = {}
+                    if config.verbose and epoch > 0:
+                        cn, n = self.cal_acc(preds['pred'], others['label'])
+                        metrics_data = {'loss': loss.cpu().numpy(), 'sampled_num': 1,
+                                        'cn': cn, 'n': n}
+                        moving_data = moving_log(epoch * train_steps + step, metrics_data)
+                        logs['loss'] = moving_data['loss'] / moving_data['sampled_num']
+                        logs['acc'] = moving_data['cn'] / moving_data['n']
+                    else:
+                        metrics_data = {'loss': loss.cpu().numpy(), 'sampled_num': 1}
+                        moving_data = moving_log(epoch * train_steps + step, metrics_data)
+                        logs['loss'] = moving_data['loss'] / moving_data['sampled_num']
+                    # update lr
+                    lr_data = learning_schedual.update_lr(epoch, step)
+                    logs.update(lr_data)
+
+                    if step + 1 == train_steps:
+                        model.eval()
+                        torch.save(model.state_dict(), ROOT_WEIGHT + 'temp_model.ckpt')
+                        aux.new_line()
+                        # dev ==========================================================================================
+                        eval_inputs = {'model': model,
+                                       'data': dev_data,
+                                       'type_data': 'dev',
+                                       'outfile': train_inputs['dev_res_file']}
+                        dev_result = self.eval(eval_inputs)
+                        logs['dev_loss'] = dev_result['loss']
+                        logs['dev_acc'] = dev_result['acc']
+                        if logs['dev_acc'] > 0.92:
+                            shutil.move(ROOT_WEIGHT + 'temp_model.ckpt',
+                                        "{}/auto_save_{:.6f}.ckpt".format(ROOT_WEIGHT, logs['dev_acc']))
+                        if (epoch > 2 or swa_flag or logs['dev_acc'] > 0.92) and config.en_swa:
+                            optimizer.update_swa()
+                            swa_flag = True
+                        early_stop, best_score = early_stopping(logs['dev_acc'])
+
+                        # test =========================================================================================
+                        if (epoch + 1 == config.epochs and step + 1 == train_steps) or early_stop:
+                            ending_flag = True
+                            if swa_flag:
+                                optimizer.swap_swa_sgd()
+                                optimizer.bn_update(train_dataloader, model)
+
+                        model.train()
+                aux.show_log(epoch, step, logs)
+                if ending_flag:
+                    return best_score
+
+    def eval(self, eval_inputs):
+        config = self.config.fitting
+        model = eval_inputs['model']
+        dev_data = eval_inputs['data']
+        type_data = eval_inputs['type_data']
+        outfile = eval_inputs['outfile']
+        dev_dataloader = DataLoader(dev_data,
+                                    batch_size=config.batch_size,
+                                    collate_fn=self.get_collate_fn('dev'))
+        entity_result = []
+        result = {}
+        data_size = int((len(dev_data) + config.batch_size - 1) / config.batch_size)
+        metrics_data = {"loss": 0, "cn": 0, "n": 0, "sampled_num": 0}
+        if 'weight' in eval_inputs:
+            model.load_state_dict(torch.load(eval_inputs['weight']))
+
+        with torch.no_grad():
+            model.eval()
+            batch_index = 1
+            print('')
+            for inputs, targets, others in dev_dataloader:
+                print('\r {}/{}'.format(batch_index, data_size), end='')
+                batch_index += 1
+                inputs = dict([(key, value[0].cuda() if value[1] else value[0]) for key, value in inputs.items()])
+                targets = dict([(key, value.cuda()) for key, value in targets.items()])
+                preds = model(inputs)
+                loss = model.cal_loss(preds, targets)
+                cn, n = self.cal_acc(preds['pred'], others['label'])
+                metrics_data['cn'] += cn
+                metrics_data['n'] += n
+                metrics_data['loss'] += float(loss.cpu().numpy())
+                metrics_data['sampled_num'] += 1
+
+                entities = self.set_type(preds['pred'], others['entities'])
+                for iid, sub_id, es in zip(others['id'], others['sub_id'], entities):
+                    entity_result.append({'id': iid,
+                                          'sub_id': sub_id,
+                                          'entities': es})
+
+        result['loss'] = metrics_data['loss'] / metrics_data['sampled_num']
+        result['acc'] = cn / n
+        self.gen_res(entity_result, type_data, outfile)
+        return result
+
+    def test(self, test_inputs):
+        config = self.config.fitting
+        model = test_inputs['model']
+        dev_data = test_inputs['data']
+        type_data = test_inputs['type_data']
+        outfile = test_inputs['outfile']
+        dev_dataloader = DataLoader(dev_data,
+                                    batch_size=config.batch_size,
+                                    collate_fn=self.get_collate_fn('test'))
+        entity_result = []
+        data_size = int((len(dev_data) + config.batch_size - 1) / config.batch_size)
+        if 'weight' in test_inputs:
+            model.load_state_dict(torch.load(test_inputs['weight']))
+
+        with torch.no_grad():
+            model.eval()
+            batch_index = 1
+            print('')
+            for inputs, others in dev_dataloader:
+                print('\r {}/{}'.format(batch_index, data_size), end='')
+                batch_index += 1
+                inputs = dict([(key, value[0].cuda() if value[1] else value[0]) for key, value in inputs.items()])
+                targets = dict([(key, value.cuda()) for key, value in targets.items()])
+                preds = model(inputs)
+
+                for iid, sub_id, entities in zip(others['id'], others['sub_id'], others['entities']):
+                    entities = self.set_type(preds['type'], entities)
+                    entity_result.append({'id': iid,
+                                          'sub_id': sub_id,
+                                          'entities': entities})
+
+        self.gen_res(entity_result, type_data, outfile)
+

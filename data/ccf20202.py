@@ -11,6 +11,7 @@ import random
 import numpy
 import pickle
 import torch
+import re
 
 from global_config import ROOT_DATA, ROOT_RESULT, ROOT_WEIGHT, ROOT_PROJECT
 from util.tool import *
@@ -49,12 +50,14 @@ class CCF2020DataSet(Dataset):
 class CCF2020DataSetFactory(object):
     def __init__(self, config):
         self.config = config
-        self.train_size = 15956
+        self.train_size = 7596
         self.train_data = json_load_by_line(ROOT_LOCAL_DATA + 'token_train_data.json')
+        self.train_data_with_mask = json_load_by_line(ROOT_LOCAL_DATA + 'token_seg_train_data_loss_mask.json')
         # self.clue_train_data = json_load_by_line(ROOT_DATA + 'clue/token_train_data.json')
         # self.clue_dev_data = json_load_by_line(ROOT_DATA + 'clue/token_dev_data.json')
         self.test_data = json_load_by_line(ROOT_LOCAL_DATA + 'token_test_data.json')
         self.train_tree = build_tree(self.train_data, 'id')
+        self.train_data_with_mask_tree = build_tree(self.train_data_with_mask, 'id')
 
         if self.config.reshuffle:
             self.train_map = [i for i in range(self.train_size)]
@@ -69,7 +72,8 @@ class CCF2020DataSetFactory(object):
     def __call__(self, inputs):
         type_data = inputs['type_data']
         fold_index = inputs['fold_index']
-        if type_data == 'train':
+        if type_data in ('train', 'train_loss_mask'):
+            data_tree = self.train_tree if type_data == 'train' else self.train_data_with_mask_tree
             if self.config.en_cross:
                 data_map = self.train_map[:fold_index * self.part_size]
                 if fold_index + 1 < self.config.fold_num:
@@ -78,10 +82,11 @@ class CCF2020DataSetFactory(object):
                 data_map = self.train_map[:self.train_size]
             data = []
             for dindex in data_map:
-                data.extend(self.train_tree[dindex])
+                data.extend(data_tree[dindex])
             # data.extend(self.clue_train_data)
             # data.extend(self.clue_dev_data)
-        elif type_data == 'dev':
+        elif type_data in ('dev', 'dev_loss_mask'):
+            data_tree = self.train_tree if type_data == 'train' else self.train_data_with_mask_tree
             if self.config.en_cross:
                 if fold_index + 1 < self.config.fold_num:
                     data_map = self.train_map[fold_index * self.part_size: (fold_index + 1) * self.part_size]
@@ -91,7 +96,7 @@ class CCF2020DataSetFactory(object):
                 data_map = self.train_map[self.train_size:]
             data = []
             for dindex in data_map:
-                data.extend(self.train_tree[dindex])
+                data.extend(data_tree[dindex])
         elif type_data == 'test':
             data = self.test_data
         elif type_data == 'combine':
@@ -112,8 +117,8 @@ class CCF2020DataProcess(object):
         self.pku_seg = None
         self.tokenizer = None
         self.word_w2v = None
-        self.train_file = 'train_data_mix.json'
-        self.test_file = 'test_data_s.json'
+        self.train_file = 'train_data.json'
+        self.test_file = 'test_data.json'
         self.type_list = ['position', 'name', 'movie', 'organization', 'company', 'game', 'book', 'address', 'scene',
                           'government', 'email', 'mobile', 'QQ', 'vx']
         assert self.config.num_types == len(self.type_list)
@@ -138,53 +143,126 @@ class CCF2020DataProcess(object):
 
     def format_data(self, data_type='train', num_works=1):
         if self.thu_lac is None or self.pku_seg is None or self.tokenizer is None or self.word_w2v is None:
-            self.thu_lac = thulac.thulac(seg_only=True)
+            # self.thu_lac = thulac.thulac(seg_only=True)
             self.pku_seg = pkuseg.pkuseg()
             self.tokenizer = MyBertTokenizer.from_pretrained(self.config.tokenizer)
             self.word_w2v = pickle.load(open(ROOT_PROJECT + '../data/w2v/w2v_vocab.pkl', 'rb'))
             self.word_w2v = dict([(word, index) for index, word in enumerate(self.word_w2v)])
 
-        def split_text(sample):
-            out_samples = []
-            right_limit = 0
-            sub_id = 0
-            rest_text = sample['text']
-            while len(rest_text) > self.max_len:
-                new_sample = {'id': None, 'sub_id': None, 'text': None, 'entities': []}
-                for char_index in range(self.max_len - 1, -1, -1):
-                    if (rest_text[char_index] in ('，', '。', '!', '?')) or char_index == 0:
-                        if char_index == 0:
-                            char_index = self.max_len - 1
-                        left_limit = right_limit
-                        right_limit += char_index + 1
-                        new_sample['text'] = rest_text[:char_index + 1]
-                        new_sample['id'] = sample['id']
-                        new_sample['sub_id'] = sub_id
+        clue_data = json_load_by_line(ROOT_DATA + 'clue/train_dev_test_data.json')
+        len_map = [[] for _ in range(55)]
+        for dd in clue_data:
+            len_map[len(dd['text'])].append(dd)
 
-                        if data_type in ('train', 'dev'):
-                            for entity in sample['entities']:
+        def split_text(sample):
+
+            def split_by_len(sample_len):
+                if len(sample_len['text']) <= self.max_len:
+                    return [sample_len]
+                out_samples = []
+                right_limit = 0
+                rest_text = sample_len['text']
+                while len(rest_text) > self.max_len:
+                    new_sample = copy.deepcopy(sample_len)
+                    new_sample['entities'] = []
+                    for char_index in range(self.max_len - 1, -1, -1):
+                        if (rest_text[char_index] in ('，', '。', '!', '?')) or char_index == 0:
+                            if char_index == 0:
+                                char_index = self.max_len - 1
+                            left_limit = right_limit
+                            right_limit += char_index + 1
+                            new_sample['text'] = rest_text[:char_index + 1]
+                            new_sample['sub_id'] = sample_len['sub_id'] + left_limit
+
+                            for entity in sample_len['entities']:
                                 if entity['pos_b'] >= left_limit and entity['pos_e'] < right_limit:
                                     new_entity = copy.deepcopy(entity)
                                     new_entity['pos_b'] = entity['pos_b'] - left_limit
                                     new_entity['pos_e'] = entity['pos_e'] - left_limit
                                     new_sample['entities'].append(new_entity)
 
-                        sub_id += 1
-                        rest_text = rest_text[char_index + 1:]
-                        out_samples.append(new_sample)
-                        break
-            else:
-                left_limit = right_limit
-                new_sample = {'id': sample['id'], 'sub_id': sub_id, 'text': rest_text, 'entities': []}
-                if data_type in ('train', 'dev'):
-                    for entity in sample['entities']:
+                            rest_text = rest_text[char_index + 1:]
+                            out_samples.append(new_sample)
+                            break
+                else:
+                    left_limit = right_limit
+                    new_sample = copy.deepcopy(sample_len)
+                    new_sample['text'] = rest_text
+                    new_sample['entities'] = []
+                    new_sample['sub_id'] = sample_len['sub_id'] + left_limit
+                    for entity in sample_len['entities']:
                         if entity['pos_b'] >= left_limit:
                             new_entity = copy.deepcopy(entity)
                             new_entity['pos_b'] = entity['pos_b'] - left_limit
                             new_entity['pos_e'] = entity['pos_e'] - left_limit
                             new_sample['entities'].append(new_entity)
-                out_samples.append(new_sample)
-            return out_samples
+                    out_samples.append(new_sample)
+                return out_samples
+
+            def split_by_clue(sample_clue):
+                out_samples = []
+
+                def split_(sample_):
+                    nonlocal out_samples
+                    a = len_map[:len(sample_['text']) + 1]
+                    a.reverse()
+                    for a_len_map in a:
+                        for clue_d in a_len_map:
+                            start_index = sample_['text'].find(clue_d['text'])
+                            if start_index == -1 and ',' in clue_d['text']:
+                                if 'text_2' not in clue_d.keys():
+                                    clue_d['text_2'] = re.sub(r',', '，', clue_d['text'])
+                                start_index = sample_['text'].find(clue_d['text_2'])
+                                if start_index != -1:
+                                    print(sample_['text'])
+                            if start_index != -1:
+                                end_index = start_index + len(clue_d['text']) - 1
+                                new_sample = {'id': sample_['id'], 'sub_id': sample_['sub_id'] + start_index,
+                                              'clue_id': clue_d['id'],
+                                              'text': sample_['text'][start_index:end_index + 1], 'entities': []}
+                                for e in sample_['entities']:
+                                    if e['pos_b'] >= start_index and e['pos_e'] <= end_index:
+                                        new_e = copy.deepcopy(e)
+                                        new_e['pos_b'] = e['pos_b'] - start_index
+                                        new_e['pos_e'] = e['pos_e'] - start_index
+                                        new_sample['entities'].append(new_e)
+                                out_samples.append(new_sample)
+                                if start_index > 0:
+                                    rest_sample_0 = {'id': sample_['id'], 'sub_id': sample_['sub_id'],
+                                                     'text': sample_['text'][:start_index], 'entities': []}
+                                    for e in sample_['entities']:
+                                        if e['pos_e'] < start_index:
+                                            new_e = copy.deepcopy(e)
+                                            rest_sample_0['entities'].append(new_e)
+                                    split_(rest_sample_0)
+                                if end_index + 1 < len(sample_['text']):
+                                    rest_sample_1 = {'id': sample_['id'], 'sub_id': sample_['sub_id'] + end_index + 1,
+                                                     'text': sample_['text'][end_index + 1:], 'entities': []}
+                                    for e in sample_['entities']:
+                                        if e['pos_b'] > end_index:
+                                            new_e = copy.deepcopy(e)
+                                            new_e['pos_b'] = e['pos_b'] - end_index - 1
+                                            new_e['pos_e'] = e['pos_e'] - end_index - 1
+                                            rest_sample_1['entities'].append(new_e)
+                                    split_(rest_sample_1)
+                                return
+
+                    new_sample = {'id': sample_['id'], 'sub_id': sample_['sub_id'], 'clue_id': -1,
+                                  'text': sample_['text'], 'entities': copy.deepcopy(sample_['entities'])}
+                    out_samples.append(new_sample)
+
+                sample_clue['sub_id'] = 0
+                split_(sample_clue)
+                return out_samples
+
+            new_samples = split_by_clue(sample)
+            new_samples_2 = []
+            for ppp in new_samples:
+                new_samples_2.extend(split_by_len(ppp))
+            new_samples_2.sort(key=lambda x: x['sub_id'])
+            for index, ppp in enumerate(new_samples_2):
+                ppp['sub_id'] = index
+            return new_samples_2
 
         def get_lattice_word(sample):
             def is_all_chinese(word_str):
@@ -223,7 +301,7 @@ class CCF2020DataProcess(object):
                     index += word_len
                 return word_list
 
-            cut_func = [jieba_cut, thulac_cut, pkuseg_cut]
+            cut_func = [pkuseg_cut]
 
             lattice_word = set()
             for func in cut_func:
@@ -241,19 +319,26 @@ class CCF2020DataProcess(object):
             text_map, raw2decode = self.tokenizer.get_token_map(sample['text'])
             lattice = []
             for lword in sample['lattice']:
-                lword_index = 0
                 if lword[0] in self.word_w2v:
                     lword_index = self.word_w2v[lword[0]]
-                lattice.append([raw2decode[lword[1]], raw2decode[lword[2]], lword_index])
+                    lattice.append([raw2decode[lword[1]], raw2decode[lword[2]], lword_index])
 
             entities = []
-            if data_type in ('train', 'dev'):
+            if 'entities' in sample.keys():
                 for entity in sample['entities']:
                     entities.append({"category": self.type2id[entity['category']],
                                      "pos_b": raw2decode[entity['pos_b']],
                                      "pos_e": raw2decode[entity['pos_e']]})
+            mask_seq = None
+            if 'loss_mask' in sample.keys():
+                mask_seq = numpy.ones(len(text))
+                for e in sample['loss_mask']:
+                    e_s = raw2decode[e[0]]
+                    e_e = raw2decode[e[1]]
+                    mask_seq[e_s:e_e + 1] = 0
+                mask_seq = mask_seq.tolist()
             return {'id': sample['id'], 'sub_id': sample['sub_id'], 'text': text, 'entities': entities,
-                    'lattice': lattice}, \
+                    'lattice': lattice, 'loss_mask': mask_seq}, \
                    {'id': sample['id'], 'sub_id': sample['sub_id'], 'text': sample['text'], 'text_map': text_map}
 
         def main_process(data, results):
@@ -267,31 +352,63 @@ class CCF2020DataProcess(object):
                     results['map'].append(text_map)
                 results['seg'].extend(samples)
 
-        if data_type == 'train':
-            in_file = self.train_file
-            data_file = 'train_data.json'
-        elif data_type == 'test':
-            in_file = self.test_file
-            data_file = 'test_data.json'
+        def add_loss_mask(data, results):
+            for i, d in enumerate(data):
+                print(i, len(data))
+                text_token, text_map = convert_to_token(d)
+                results['token'].append(text_token)
+
+        if data_type in ('train', 'test'):
+            in_file = self.train_file if data_type == 'train' else self.test_file
+            run_func = main_process
+            out_data = {'seg': [],
+                        'token': [],
+                        'map': []}
+        elif data_type == 'train_loss_mask':
+            run_func = add_loss_mask
+            in_file = 'seg_train_data_loss_mask.json'
+            out_data = {'token': []}
         else:
             print('format_data', data_type)
             return None
 
         raw_data = json_load_by_line(ROOT_LOCAL_DATA + in_file)
-        out_data = {'seg': [],
-                    'token': [],
-                    'map': []}
         if num_works > 1:
-            simple_multiprocess(main_process, raw_data, out_data, num_works)
+            simple_multiprocess(run_func, raw_data, out_data, num_works)
         else:
-            main_process(raw_data, out_data)
+            run_func(raw_data, out_data)
 
-        json_dump_by_line(out_data['token'], ROOT_LOCAL_DATA + 'token_' + data_file)
-        json_dump_by_line(out_data['map'], ROOT_LOCAL_DATA + 'map_' + data_file)
-        json_dump_by_line(out_data['seg'], ROOT_LOCAL_DATA + 'seg_' + data_file)
+        if data_type == 'train':
+            clue_train_data = clue_data[:12082]
+            ccf_data = out_data['seg']
+            clue_out_ccf_data = []
+            ccf_in_clue_data = []
+            for dd in ccf_data:
+                if dd['clue_id'] < 12082:
+                    ccf_in_clue_data.append(dd['clue_id'])
+            index = ccf_data[-1]['id'] + 1
+            # index = 2514
+            for dd in clue_train_data:
+                if dd['id'] not in ccf_in_clue_data:
+                    new_d = {'id': index, 'sub_id': 0, 'clue_id': dd['id'],
+                             'text': dd['text'], 'entities': dd['entities']}
+                    index += 1
+                    clue_out_ccf_data.append(new_d)
+            out_data2 = {'seg': [],
+                         'token': [],
+                         'map': []}
+            if num_works > 1:
+                simple_multiprocess(main_process, clue_out_ccf_data, out_data2, num_works)
+            else:
+                main_process(clue_out_ccf_data, out_data2)
+            for key in out_data.keys():
+                out_data[key].extend(out_data2[key])
+
+        for key in out_data.keys():
+            json_dump_by_line(out_data[key], ROOT_LOCAL_DATA + '{}_'.format(key) + in_file)
 
     def generate_results(self, pred, data_type, output_file, keep_token=False):
-        json_dump_by_line(pred, ROOT_RESULT+'temp_result.json')
+        # json_dump_by_line(pred, ROOT_RESULT + 'temp_result.json')
         data_set = {"train": "map_train_data.json",
                     'dev': 'map_train_data.json',
                     'test': 'map_test_data.json'}
@@ -308,20 +425,21 @@ class CCF2020DataProcess(object):
         seg_data = json_load_by_line(ROOT_LOCAL_DATA + seg_data_set[data_type])
         id_tree_token = build_tree(token_data, 'id')
         id_tree_seg = build_tree(seg_data, 'id')
-
         result = []
         for p in pred:
             d = id_tree[p['id']][p['sub_id']]
             td = id_tree_token[p['id']][p['sub_id']]
             sd = id_tree_seg[p['id']][p['sub_id']]
             if 'emission' in p:  # entity emission
-                sample = {'id': d['id'], 'sub_id': d['sub_id'], 'text': td['text'], 'emission': p['emission'].tolist()}
+                sample = {'id': d['id'], 'sub_id': d['sub_id'], 'clue_id': sd['clue_id'],
+                          'text': td['text'], 'emission': p['emission']}
             else:
                 if keep_token:
                     sample = td
                     sample['entities'] = []
                 else:
-                    sample = {'id': d['id'], 'sub_id': d['sub_id'], 'text': d['text'], 'entities': []}
+                    sample = {'id': d['id'], 'sub_id': d['sub_id'], 'clue_id': sd['clue_id'],
+                              'text': d['text'], 'entities': []}
                 for entity in p['entities']:
                     if keep_token:
                         sample['entities'].append({'category': entity[0], 'pos_b': entity[1], 'pos_e': entity[2]})
@@ -346,6 +464,7 @@ class CCF2020DataProcess(object):
                             print(token_entity)
                             print(raw_entity)
                             print(sd['text'])
+                            print(sd['entities'])
 
             result.append(sample)
         json_dump_by_line(result, output_file)
@@ -395,9 +514,10 @@ class CCF2020DataProcess(object):
 def get_email(text):
     if '@' not in text and '#' not in text:
         return []
-    pattern = re.compile(
-        r"(([a-z]+[0-9]*[-_.]?[0-9]*){1,4}|[0-9]{4,16})(\@|\#)[a-z0-9-]*(\.[a-z0-9]{0,8}){,4}(?:\.cn|\.com|\.tw|\.net|\.asia|\.org|\.edu|\.hk|\.au|\.tv|\.sg|\.mo|\.ca)+",
-        re.IGNORECASE)
+    # pattern = re.compile(
+    #     r"(([a-z]+[0-9]*[-_.]?[0-9]*){1,4}|[0-9]{4,16})(\@|\#)[a-z0-9-]*(\.[a-z0-9]{0,8}){,4}(?:\.cn|\.com|\.tw|\.net|\.asia|\.org|\.edu|\.hk|\.au|\.tv|\.sg|\.mo|\.ca)+",
+    #     re.IGNORECASE)
+    pattern = None
     h = pattern.finditer(text)
     emails = []
     for i in h:
@@ -439,11 +559,11 @@ def get_qq_strict(text):
 
 
 def get_vx(text):
-    pattern = re.compile(r"微信[^0-9.]{,6}[0-9a-z_-]{2,20}", re.IGNORECASE)
+    pattern = re.compile(r"微信[^0-9.]{,6}[0-9a-z_-]{4,20}", re.IGNORECASE)
     h = pattern.finditer(text)
     qq = []
     for i in h:
-        qq_num = re.search(r"[0-9a-z_-]{2,20}$", i.group(), re.IGNORECASE).group()
+        qq_num = re.search(r"[0-9a-z_-]{4,20}$", i.group(), re.IGNORECASE).group()
         qq.append({'privacy': qq_num,
                    'category': 'vx',
                    'pos_b': i.span()[1] - len(qq_num),
@@ -469,7 +589,8 @@ def clean_result(infile, outfile):
             if '""' == e['privacy'][-2:]:
                 e['privacy'] = e['privacy'][:-2]
                 e['pos_b'] -= 2
-            if "(（”" == e['privacy'][0] and e['pos_e'] + 1 < len(sample['text']) and sample['text'][e['pos_e'] + 1] == ')）”':
+            if "(（”" == e['privacy'][0] and e['pos_e'] + 1 < len(sample['text']) and sample['text'][
+                e['pos_e'] + 1] == ')）”':
                 e['privacy'] = e['privacy'][1:]
                 e['pos_b'] += 1
             if ")）”" == e['privacy'][-1] and sample['text'][e['pos_e'] - 1] == '(（”':
@@ -545,6 +666,66 @@ def clean_result(infile, outfile):
     json_dump_by_line(data, outfile)
 
 
+def clean_result_2(infile, outfile):
+    data = json_load_by_line(infile)
+    for sample in data:
+        new_entities = []
+        qq = get_qq_strict(sample['text'])
+        for q in qq:
+            if q not in sample['entities']:
+                sample['entities'].append(q)
+        vx = get_vx(sample['text'])
+        for v in vx:
+            if v not in sample['entities']:
+                sample['entities'].append(v)
+        for e in sample['entities']:
+            if e['category'] == 'email':
+                if '@' not in e['privacy'] and '#' not in e['privacy']:
+                    continue
+                h = re.search(r"[0-9a-z._-]+(\@|\#)[0-9a-z_-]+\.[a-z0-9._-]+", e['privacy'], re.IGNORECASE)
+                if not h:
+                    continue
+                e['privacy'] = h.group()
+                e['pos_b'] = e['pos_b'] + h.span()[0]
+                e['pos_e'] = e['pos_b'] + len(e['privacy']) - 1
+            if e['category'] == 'QQ':
+                if len(e['privacy']) <= 6:
+                    continue
+                if not re.search('(q|群)', sample['text'], re.IGNORECASE):
+                    continue
+
+                h = re.search(r"[0-9]{7,12}", e['privacy'], re.IGNORECASE)
+                if not h or len(h.group()) >= 12:
+                    continue
+                else:
+                    e['privacy'] = h.group()
+                    e['pos_b'] = e['pos_b'] + h.span()[0]
+                    e['pos_e'] = e['pos_b'] + len(e['privacy']) - 1
+            if e['category'] == 'mobile':
+                if len(e['privacy']) > 15 and e['privacy'].isdigit():
+                    h = re.search(r"(1[3-9]{10}$|^1[3-9]{10})", e['privacy'], re.IGNORECASE)
+                    if h:
+                        e['privacy'] = h.group()
+                        e['pos_b'] = e['pos_b'] + h.span()[0]
+                        e['pos_e'] = e['pos_b'] + len(e['privacy']) - 1
+                    else:
+                        continue
+                h = re.search(r"[a-np-z]", e['privacy'], re.IGNORECASE)
+                if h:
+                    continue
+            if e['category'] == 'vx':
+                if not re.search('(vx|微|wx)', sample['text'], re.IGNORECASE):
+                    continue
+            if e['category'] == 'name':
+                if '"' in e['privacy']:
+                    print(e['privacy'])
+                    e['privacy'] = re.sub('"', '', e['privacy'])
+                    print(e['privacy'])
+            new_entities.append(e)
+        sample['entities'] = new_entities
+    json_dump_by_line(data, outfile)
+
+
 def convert2json(text_dir, output_file, label_dir=None):
     text_file_list = os.listdir(text_dir)
     data = []
@@ -591,7 +772,7 @@ def convert2csv(infile, outfile):
                 print(d)
             pos_b = base + e['pos_b']
             pos_e = pos_b + len(e['privacy']) - 1
-            csv_data.append([d['id'], e['category'], pos_b, pos_e, e['privacy']])
+            csv_data.append([d['id'], e['category'], pos_b, pos_e, str(e['privacy'])])
 
         base += len(d['text'])
 
@@ -616,15 +797,12 @@ def analyze_dev_data(pred_file, target_file):
             target_tree[t['id']] = {}
         if t['sub_id'] not in target_tree[t['id']]:
             target_tree[t['id']][t['sub_id']] = t
-
-    f1_result = dict((key, {'cn': 0, 'pn': 0, 'tn': 0}) for key in
-                     ['position', 'name', 'movie', 'organization', 'company', 'game', 'book', 'address', 'scene',
-                      'government',
-                      'email', 'mobile', 'QQ', 'vx', 'all'])
-
+    type_list = ['position', 'name', 'movie', 'organization', 'company', 'game', 'book', 'address', 'scene',
+                 'government', 'email', 'mobile', 'QQ', 'vx']
+    f1_result = dict((key, {'cn': 0, 'pn': 0, 'tn': 0}) for key in type_list + ['all'])
+    num = 0
+    error_num = 0
     for p in pred_data:
-        # p['entities'] = get_email(p['text'])
-
         target = target_tree[p['id']][p['sub_id']]
         target_entities = [[x['category'], x['pos_b'], x['pos_e']] for x in target['entities']]
         target_span = [[x['pos_b'], x['pos_e']] for x in target['entities']]
@@ -641,57 +819,58 @@ def analyze_dev_data(pred_file, target_file):
         target_c = split_by_category(target['entities'])
         precise_list = []
         recall_list = []
-        for key in pred_c.keys():
-
+        for key in type_list:
             for e in pred_c[key]:
                 if e in target_c[key]:
                     f1_result[key]['cn'] += 1
                     f1_result['all']['cn'] += 1
                 else:
-                    precise_list.append(e)
-            # if key == 'QQ':
+                    if key == 'mobile':
+                        precise_list.append(e)
             for e in target_c[key]:
                 if e in pred_c[key]:
                     pass
                 else:
-                    recall_list.append(e)
+                    if key == 'mobile':
+                        recall_list.append(e)
 
             f1_result[key]['pn'] += len(pred_c[key])
             f1_result[key]['tn'] += len(target_c[key])
             f1_result['all']['pn'] += len(pred_c[key])
             f1_result['all']['tn'] += len(target_c[key])
 
-        if (precise_list or recall_list):
-            print('\nprecise')
-            print(precise_list)
-            print('recall')
-            print(recall_list)
-            print(target['text'])
+        if precise_list or recall_list:
+            error_num += 1
+            # print('\nprecise')
+            # print(precise_list)
+            # print('recall')
+            # print(recall_list)
+            # print('clue_id: {}'.format(target['clue_id']), target['text'])
             # print(target['entities'])
-
+        num += 1
     for key in f1_result.keys():
         p, r, f1 = calculate_f1(f1_result[key]['cn'],
                                 f1_result[key]['pn'],
                                 f1_result[key]['tn'], verbose=True)
         print('{:<12s}: precise {:0.6f} - recall {:0.6f} - f1 {:0.6f} - num {}'.format(key, p, r, f1,
                                                                                        f1_result[key]['tn']))
+    print(error_num / num)
 
 
 def analyze_train_data(train_file):
     data = json_load_by_line(train_file)
-    # data.extend(json_load_by_line(ROOT_DATA + 'clue/dev_data.json'))
-    # data.extend(json_load_by_line(ROOT_DATA + 'clue/dev_data.json'))
-    # max_lattice = 0
     count_len = []
     for d in data:
         name_list = []
 
         nested_list = []
-        for ei, e in enumerate(d['entities']):
-            if e['category'] == 'email':  # and e['privacy'] not in name_list and len(e['privacy'])>1 and \
-                name_list.append(e['privacy'])
+        if d['clue_id'] == -1 or d['clue_id'] > 12090:
+            for ei, e in enumerate(d['entities']):
+                if e['category'] == 'address':  # and e['privacy'] not in name_list and len(e['privacy'])>1 and \
+                    name_list.append(e)
         if name_list:
-            print(name_list)
+            for n in name_list:
+                print(n)
             print(d['text'])
             print('\n')
 
@@ -715,42 +894,173 @@ def check_name(infile, name_file):
             print('\n')
 
 
-if __name__ == '__main__':
-    pass
-    # convert2json('../../data/ccf2020_ner/train_data/', ROOT_LOCAL_DATA + 'train_data.json',
-    #              label_dir='../../data/ccf2020_ner/train_label/')
-    # convert2json('../../data/ccf2020_ner/test_data/', ROOT_LOCAL_DATA + 'test_data.json')
+def mix_clue_result(infile, clue_file, outfile):
+    data = json_load_by_line(infile)
+    clue_data = json_load_by_line(clue_file)
+    for d in data:
+        if -1 < d['clue_id'] < 12091:
+            clue_d = clue_data[d['clue_id']]
+            p_list = []
+            r_list = []
+            for p in d['entities']:
+                if p not in clue_d['entities']:
+                    p_list.append(p)
+            for r in clue_d['entities']:
+                if r not in d['entities']:
+                    r_list.append(r)
+            d['entities'] = clue_d['entities']
+            for e in d['entities']:
+                e['privacy'] = d['text'][e['pos_b']:e['pos_e'] + 1]
+            if p_list or r_list:
+                print('precise')
+                print(p_list)
+                print('recall')
+                print(r_list)
+                print(d['text'])
+                print('\n')
+        else:
+            pass
+            # d['entities'] = []
 
-    # data = json_load_by_line(ROOT_LOCAL_DATA + 'train_data.json')
-    # test_result = json_load_by_line(ROOT_RESULT + 'test_result.json')
-    # data = json_load_by_line(ROOT_RESULT + 'test_result.json')
-    # count = 0
-    # for d, t in zip(data, test_result):
-    #     emails = get_vx(d['text'])
-    #     t = d
-    #     p_list = []
-    #     r_list = []
-    #     for i in emails:
-    #         if i not in t['entities']:
-    #             p_list.append(i)
-    #     for i in t['entities']:
-    #         if i['category'] == 'vx' and i not in emails:
-    #             r_list.append(i)
-    #     if p_list or r_list:
-    #         print('p')
-    #         print(p_list)
-    #         print('r')
-    #         print(r_list)
-    #         print(d['text'])
+    json_dump_by_line(data, outfile)
+
+
+def convert():
+    convert2json('../../data/ccf2020_ner/train_data/', ROOT_LOCAL_DATA + 'train_data.json',
+                 label_dir='../../data/ccf2020_ner/train_label/')
+    convert2json('../../data/ccf2020_ner/test_data/', ROOT_LOCAL_DATA + 'test_data.json')
+
+
+def analyze_0():
+    data = json_load_by_line(ROOT_LOCAL_DATA + 'train_data.json')
+    test_result = json_load_by_line(ROOT_RESULT + 'test_result.json')
+    data = json_load_by_line(ROOT_RESULT + 'test_result.json')
+    count = 0
+    for d, t in zip(data, test_result):
+        emails = get_vx(d['text'])
+        t = d
+        p_list = []
+        r_list = []
+        for i in emails:
+            if i not in t['entities']:
+                p_list.append(i)
+        for i in t['entities']:
+            if i['category'] == 'vx' and i not in emails:
+                r_list.append(i)
+        if p_list or r_list:
+            print('p')
+            print(p_list)
+            print('r')
+            print(r_list)
+            print(d['text'])
+    print(count)
+
+
+def calculate_rate(infile):
+    data = json_load_by_line(infile)
+    num = 0
+    count = 0
+    for d in data:
+        if d['clue_id'] != -1:
+            count += 1
+        num += 1
+    print(count / num)
     # print(count)
-    data = json_load_by_line(ROOT_LOCAL_DATA + 'train_data_s.json')
-    data.extend(json_load_by_line(ROOT_LOCAL_DATA + 'test_data_s.json'))
-    # data = json_load_by_line('../../data/clue_ner/test.json')
+
+
+def cal_len(infile):
+    data = json_load_by_line(infile)
     count_len = []
     for d in data:
-        if len(d['text']) < 5:
-            print(d)
+        # if len(d['text']) > 130:
+        #     print(d['text'])
         count_len.append(len(d['text']))
-    length, rate = count_item(count_len)
-    for l, r in zip(length, rate):
-        print(l, r)
+    a = count_item(count_len)
+    for aa in a:
+        print(aa)
+
+
+def find_same_entity(infile):
+    data = json_load_by_line(infile)
+    count = 0
+    for d in data:
+        entity_tree = dict()
+        for e in d['entities']:
+            e_str = e['privacy'] + str(e['pos_b']) + str(e['pos_e'])
+            if e_str not in entity_tree.keys():
+                entity_tree[e_str] = []
+            entity_tree[e_str].append(e)
+        for key in entity_tree.keys():
+            if len(entity_tree[key]) > 1:
+                print(entity_tree[key])
+                print(d['text'])
+                print(d['entities'])
+                print('\n')
+                count += 1
+    print(count)
+
+
+def cal_dev_score(dev_dir):
+    pred_data = []
+    for i in range(5):
+        pd = json_load_by_line(dev_dir + '/dev_result_{}.json'.format(i))
+        pred_data.extend(pd)
+
+    ccf_data = []
+    for d in pred_data:
+        # if d['clue_id'] == -1:
+        # if d['clue_id'] > 12
+        ccf_data.append(d)
+
+    json_dump_by_line(ccf_data, ROOT_RESULT + 'temp_result.json')
+    clean_result_2(ROOT_RESULT + 'temp_result.json', ROOT_RESULT + 'temp_result2.json')
+    analyze_dev_data(ROOT_RESULT + 'temp_result2.json', ROOT_LOCAL_DATA + 'seg_train_data.json')
+
+
+def generate_loss_mask(pred_dirs, train_file, outfile):
+    train_data = json_load_by_line(train_file)
+    for pred_dir, type_list in pred_dirs:
+        pred_data = []
+        for i in range(5):
+            pd = json_load_by_line(pred_dir + '/dev_result_{}.json'.format(i))
+            pred_data.extend(pd)
+
+        pred_tree = build_tree(pred_data, 'id')
+        for d in train_data:
+            pd = pred_tree[d['id']][d['sub_id']]
+            if pd['sub_id'] != d['sub_id']:
+                print('error')
+            if 'loss_mask' not in d.keys():
+                d['loss_mask'] = []
+            for e in d['entities']:
+                if e not in pd['entities'] and e['category'] in type_list:
+                    pair = [e['pos_b'], e['pos_e']]
+                    if pair not in d['loss_mask']:
+                        d['loss_mask'].append(pair)
+    json_dump_by_line(train_data, outfile)
+
+
+if __name__ == '__main__':
+    pass
+    analyze_dev_data(ROOT_RESULT + 'dev_result.json', ROOT_LOCAL_DATA + 'seg_train_data.json')
+    # analyze_train_data(ROOT_LOCAL_DATA + 'seg_train_data.json')
+    # analyze_train_data(ROOT_RESULT + 'test_result_1.json')
+    # mix_clue_result(ROOT_RESULT + 'test_result.json', ROOT_DATA + 'clue/train_dev_test_data.json',
+    #                 ROOT_RESULT + 'clean_test_result.json')
+    # calculate_rate(ROOT_LOCAL_DATA + 'test1_data_s.json')
+    # cal_len(ROOT_LOCAL_DATA + 'test2_data.json')
+    # calculate_rate(ROOT_LOCAL_DATA + 'test1_data_s.json')
+    # clean_result_2(ROOT_RESULT + 'combine_test_result.json', ROOT_RESULT + 'clean_combine_test_result.json')
+    # mix_clue_result(ROOT_RESULT + 'clean_combine_test_result.json', ROOT_DATA + 'clue/train_dev_test_data.json',
+    #                         ROOT_RESULT + 'clue_combine_test_result.json')
+    # convert2csv(ROOT_RESULT + 'clean_combine_test_result.json',
+    #                     ROOT_RESULT + 'noclue_combine_predict.csv')
+    # analyze_train_data(ROOT_LOCAL_DATA + 'seg_train_data.json')
+    cal_dev_score(ROOT_RESULT + 'none_linear_nobie_5fold_3_pu/')
+    cal_dev_score(ROOT_RESULT + '/')
+    # find_same_entity(ROOT_RESULT + "none_linear_nobie_5fold_3_pu/combine_test_result.json")
+    # generate_loss_mask(
+    #     [(ROOT_RESULT + 'w2v_flat_nobie_5fold/', ['position', 'movie', 'organization', 'company', 'book', 'address']),
+    #      (ROOT_RESULT + 'none_linear_nobie_5fold_3_pu/', ['name', 'game', 'scene', 'government'])],
+    #     ROOT_LOCAL_DATA + 'seg_train_data.json',
+    #     ROOT_LOCAL_DATA + 'seg_train_data_loss_mask.json')

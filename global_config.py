@@ -13,7 +13,7 @@ ROOT_MODULE = ROOT_PROJECT + "module/"
 ROOT_RESULT = ROOT_PROJECT + "result/"
 ROOT_WEIGHT = ROOT_PROJECT + "weight/"
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 seed = 19
 torch.manual_seed(seed)

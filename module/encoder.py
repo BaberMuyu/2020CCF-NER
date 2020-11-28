@@ -11,7 +11,7 @@ WordE = Enum('WordEncoding', ('none', 'w2v', 'cat', 'attn'))
 class EncoderConfig(object):
     def __init__(self):
         self.worde = WordE.none
-        self.dropout = 0.0
+        self.dropout = 0.1
 
         # ptm
         self.ptm_model = 'hfl/chinese-roberta-wwm-ext'  # 'hfl/chinese-roberta-wwm-ext-large'
@@ -100,15 +100,15 @@ class TextEncoder(nn.Module):
             part_size = inputs['part_size']
             if self.config.worde == WordE.w2v:
                 word_vec = self.w2v_linear(word_text)
-                word_vec = self.layer_norm(word_vec)
                 word_vec = self.dropout(word_vec)
+                word_vec = self.layer_norm(word_vec)
             elif self.config.worde == WordE.cat:
                 word_vec = torch.index_select(char_vec.view([-1, self.config.ptm_feat_size]), dim=0,
                                               index=word_indice)  # word_indice b * l * [s, e]
                 word_vec = word_vec.reshape([text.size(0), -1, 2 * self.config.ptm_feat_size])
                 word_vec = self.cat_linear(word_vec)  # B, L, F
-                word_vec = self.layer_norm(word_vec)
                 word_vec = self.dropout(word_vec)
+                word_vec = self.layer_norm(word_vec)
             elif self.config.worde == WordE.attn:
                 pe = inputs['pos_emb']
                 pe_ss = pe(word_s.unsqueeze(dim=2) - char_s.unsqueeze(dim=1))

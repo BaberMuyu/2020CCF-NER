@@ -52,8 +52,8 @@ class Config(object):
         self.fitting.dev_rate = 0.2
         self.fitting.en_fgm = True
         self.fitting.en_swa = True
-        self.fitting.epochs = 3  # 20
-        self.fitting.end_epoch = 3
+        self.fitting.epochs = 8
+        self.fitting.end_epoch = 8
         self.fitting.batch_size = 16
         self.fitting.lr = {'ptm': 0.00003,
                            'other': 0.00003}

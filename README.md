@@ -1,0 +1,3 @@
+# 2020CCF-NER
+2020 CCF大数据与计算智能大赛-非结构化商业文本信息中隐私信息识别-第7名方案
+bert base + flat + crf + fgm + swa + pu learning策略 + clue数据集 = test1单模0.906

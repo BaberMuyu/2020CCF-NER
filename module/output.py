@@ -46,7 +46,6 @@ class OutputConfigPoint(OutputConfig):
         super(OutputConfigPoint, self).__init__()
         self.label = LabelE.point
         self.only_crf = False
-        self.crf_strict = True
 
     def __str__(self):
         string = super(OutputConfigPoint, self).__str__()
@@ -156,11 +155,11 @@ class OutputOBIE(Output):
                 if self.config.crf_strict:
                     if token == 0:  # O
                         if e_s != -1:
-                            add_entity(e_s, pos-1)
+                            add_entity(e_s, pos - 1)
                             e_s = -1
                     if token == 1:  # B
                         if e_s != -1:
-                            add_entity(e_s, pos-1)
+                            add_entity(e_s, pos - 1)
                         e_s = pos
                     if token == 3:  # E
                         if e_s != -1:
@@ -213,7 +212,7 @@ class OutputOBIE(Output):
                         else:
                             s, e, c = pos, pos, e_cate
                     elif e_token == 1:  # I
-                        if s != -1: # and c == e_cate:
+                        if s != -1:  # and c == e_cate:
                             e = pos
                         else:
                             s, e, c = -1, -1, -1
@@ -223,57 +222,6 @@ class OutputOBIE(Output):
                             add_entity(c, s, e)
                         s, e, c = -1, -1, -1
             return entities_point
-
-        def find_entitiy_cobie(text_line):
-            ps = np.zeros(len(text_line))
-            pe = np.zeros(len(text_line))
-            pi = np.zeros(len(text_line))
-            for index, value in enumerate(text_line):
-                if value != 0:
-                    pi[index] = 1
-                    if value == 1:
-                        ps[index] = 1
-                    elif value == 3:
-                        pe[index] = 1
-            entities_point_line = []
-            seq_length = len(text_line)
-            start_index = -999
-            end_index = 999
-            ps_map = np.zeros(seq_length, dtype=np.int)
-            pe_map = np.zeros(seq_length, dtype=np.int)
-            start_list = []
-            end_list = []
-            for index in range(seq_length):
-                if ps[index]:
-                    start_index = index
-                    start_list.append(start_index)
-                if pe[seq_length - index - 1]:
-                    end_index = seq_length - index - 1
-                    end_list.append(end_index)
-                ps_map[index] = start_index
-                pe_map[seq_length - index - 1] = end_index
-
-            for start_index in start_list:
-                end_index = pe_map[start_index]
-                if end_index == 999:
-                    end_index = start_index
-                entity_point = [start_index, end_index]
-                entity_len = end_index - start_index + 1
-                mid_len = pi[start_index:end_index+1].sum()
-                if entity_point[0] != -999 and entity_point[1] != 999 and entity_len == mid_len:
-                    if entity_point not in entities_point_line:
-                        entities_point_line.append(entity_point)
-
-            for end_index in end_list:
-                start_index = ps_map[end_index]
-                entity_point = [start_index, end_index]
-                entity_len = end_index - start_index + 1
-                mid_len = pi[start_index:end_index+1].sum()
-                if entity_point[0] != -999 and entity_point[1] != 999 and entity_len == mid_len:
-                    if entity_point not in entities_point_line:
-                        entities_point_line.append(entity_point)
-
-            return [[0, e[0], e[1]] for e in entities_point_line]
 
         entity = []
         for a_pred in pred:
@@ -301,35 +249,35 @@ class OutputPoint(Output):
         self.params['other'].extend([p for p in self.emission_linear.parameters()])
 
     def decode(self, emission, mask):
-        emission = emission * mask.unsqueeze(dim=1)
-        result = emission > 0.5
+        emission = emission * mask.unsqueeze(dim=-1)
+        emission = emission.permute([0, 2, 1])  # B L F -> B F L
+        # result = emission > 0.5
+        max_n, _ = emission.max(dim=1)
+        result = emission >= max_n.unsqueeze(dim=1)
         result = result.cpu().numpy()
         return result
 
     def cal_emission(self, text_vec):
         emission = self.emission_linear(text_vec)
         # emission = nn.functional.sigmoid(emission)
-        emission = nn.functional.softmax(emission, dim=-1)
-        emission = emission.permute([0, 2, 1])  # B L F -> B F L
+        # emission = nn.functional.softmax(emission, dim=1)
+        # emission = emission.permute([0, 2, 1])  # B L F -> B F L
         return emission
 
     def cal_loss(self, preds, targets, mask):
         emission = preds['emission']
-        y_true = targets['y_true']
-        c = 1.5
+        y_true = targets['y_true'].argmax(dim=1)
+        # c = 1.5
         # loss
-        mask = mask.unsqueeze(dim=1)
-        mask_1 = mask * y_true
-        mask_0 = mask * (1 - y_true)
-        _loss = nn.functional.binary_cross_entropy(emission, y_true, reduction='none')
-        loss_0 = _loss * mask_0
-        loss_1 = _loss * mask_1
-        sum_0 = mask_0.sum()
-        sum_1 = mask_1.sum()
-        loss_0 = loss_0.sum() / sum_0
-        loss_1 = loss_1.sum() / sum_1
-        rate_0 = (sum_0 + sum_1 - sum_1 * c) / (sum_0 + sum_1)
-        _loss = loss_0 * rate_0 + loss_1 * (1 - rate_0)
+        # emission = torch.log(emission)
+        # _loss = nn.functional.nll_loss(emission.reshape([-1, self.config.num_types*2+1]),
+        #                                y_true.reshape([-1]),
+        #                                reduction='none')
+        _loss = nn.functional.cross_entropy(emission.reshape([-1, self.config.num_types * 2 + 1]),
+                                            y_true.reshape([-1]),
+                                            reduction='none')
+        _loss = _loss.reshape(mask.size())
+        _loss = (mask * _loss).sum() / mask.sum()
         return _loss
 
     def find_entity(self, pred, text=None):
@@ -355,18 +303,14 @@ class OutputPoint(Output):
             for start_index in start_list:
                 end_index = pe_map[start_index]
                 entity_point = [start_index, end_index]
-                entity_len = end_index - start_index + 1
-                mid_len = pi[start_index + 1:end_index].sum()
-                if entity_point[0] != -999 and entity_point[1] != 999 and (entity_len < 2 or entity_len - 2 == mid_len):
+                if entity_point[0] != -999 and entity_point[1] != 999:
                     if entity_point not in entities_point_line:
                         entities_point_line.append(entity_point)
 
             for end_index in end_list:
                 start_index = ps_map[end_index]
                 entity_point = [start_index, end_index]
-                entity_len = end_index - start_index + 1
-                mid_len = pi[start_index + 1:end_index].sum()
-                if entity_point[0] != -999 and entity_point[1] != 999 and (entity_len < 2 or entity_len - 2 == mid_len):
+                if entity_point[0] != -999 and entity_point[1] != 999:
                     if entity_point not in entities_point_line:
                         entities_point_line.append(entity_point)
 
@@ -384,31 +328,3 @@ class OutputPoint(Output):
 
             entity.append(entity_line)
         return entity
-
-
-class OutputType(nn.Module):
-    def __init__(self, config):
-        super(OutputType, self).__init__()
-        self.config = config
-        self.output = nn.Linear(config.in_feat_size * 2, config.num_types)
-        self.params = {'other': [p for p in self.output.parameters()]}
-
-    def get_params(self):
-        return self.params
-
-    def forward(self, inputs, en_pred=True):
-        text_vec = inputs['text_vec']
-        indices = inputs['indice']
-        entities_feat = torch.index_select(text_vec.reshape(-1, text_vec.size(-1)), dim=0, index=indices)
-        entities_feat = entities_feat.reshape(-1, text_vec.size(-1) * 2)
-        emission = self.output(entities_feat)
-        pred = []
-        if en_pred and emission.size(0) != 0:
-            pred = torch.argmax(emission, dim=1).tolist()
-        return {'emission': emission, 'pred': pred}
-
-    def cal_loss(self, preds, targets):
-        emission = preds['emission']
-        y_true = targets['y_true']
-        _loss = nn.functional.cross_entropy(emission, y_true, reduction='mean')
-        return _loss

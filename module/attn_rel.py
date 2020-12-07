@@ -124,7 +124,7 @@ class MultiHeadAttentionRel(nn.Module):
 
         # mask = seq_len_to_mask(seq_len).bool().unsqueeze(1).unsqueeze(1)
         mask = key_mask.byte().unsqueeze(1).unsqueeze(1)
-        attn_score_raw_masked = attn_score_raw.masked_fill(~mask, -1e15)
+        attn_score_raw_masked = attn_score_raw.masked_fill(1-mask, -1e15)
 
         attn_score = nn.functional.softmax(attn_score_raw_masked, dim=-1)
 

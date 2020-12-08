@@ -398,10 +398,11 @@ class CCF2020DataProcess(object):
                 sample['entities'].append(raw_entity)
                 token_entity = {'category': entity[0], 'pos_b': entity[1], 'pos_e': entity[2]}
                 if raw_entity not in sd['entities'] and token_entity in td['entities']:
-                    print(token_entity)
-                    print(raw_entity)
-                    print(sd['text'])
-                    print(sd['entities'])
+                    pass
+                    # print(token_entity)
+                    # print(raw_entity)
+                    # print(sd['text'])
+                    # print(sd['entities'])
 
             result.append(sample)
         json_dump_by_line(result, output_file)

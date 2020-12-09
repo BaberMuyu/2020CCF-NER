@@ -153,7 +153,7 @@ if __name__ == '__main__':
 
     if en_conv:
         if config.fitting.en_cross:
-            data_process.combine_by_vote([ROOT_RESULT + 'test_result_{}.json'.format(i) for i in range(5)],
+            data_process.combine_by_vote([ROOT_RESULT + 'test_result_{}.json'.format(i) for i in range(config.fitting.fold_num)],
                                          ROOT_RESULT + 'test_result_vote.json')
             ccf2020.mix_clue_result(ROOT_RESULT + 'test_result_vote.json',
                                     ROOT_DATA + 'clue/train_dev_test_data.json',

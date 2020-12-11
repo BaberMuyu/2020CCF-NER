@@ -28,17 +28,17 @@ if __name__ == '__main__':
     from multiprocessing import Process
     import time
 
-    path = '/home/zsp/projects/realtion_extract/joint_7830.txt'
-    remote_path = '/home/zsp/python/relation_extraction/saved_model/large/joint_7830.txt'
+    path = ''
+    remote_path = ''
 
 
     def my_copy():
         remote_scp(action='remoteWrite',
-                   host_ip="192.168.1.213",
+                   host_ip="",
                    remote_path=remote_path,
                    local_path=path,
-                   username='zsp',
-                   password='shenpeng12.')
+                   username='',
+                   password='')
 
 
     copy_p = Process(target=my_copy)

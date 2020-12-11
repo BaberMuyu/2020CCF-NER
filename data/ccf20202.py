@@ -47,7 +47,7 @@ class CCF2020DataSet(Dataset):
 class CCF2020DataSetFactory(object):
     def __init__(self, config):
         self.config = config
-        self.train_size = 7596
+        self.train_size = 7596  # ccf2020+clue数据集后的最大id+1
         self.train_data = json_load_by_line(ROOT_LOCAL_DATA + 'token_train_data.json')
         self.test_data = json_load_by_line(ROOT_LOCAL_DATA + 'token_test_data.json')
         self.train_tree = build_tree(self.train_data, 'id')
@@ -333,7 +333,7 @@ class CCF2020DataProcess(object):
             run_func(raw_data, out_data)
 
         if data_type == 'train':
-            clue_train_data = clue_data[:12082]
+            clue_train_data = clue_data[:12082]  # 12082为clue数据集中train+dev的数目
             ccf_data = out_data['seg']
             clue_out_ccf_data = []
             ccf_in_clue_data = []

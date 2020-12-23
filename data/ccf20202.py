@@ -356,7 +356,8 @@ class CCF2020DataProcess(object):
                 main_process(clue_out_ccf_data, out_data2)
             for key in out_data.keys():
                 out_data[key].extend(out_data2[key])
-
+        
+        # 生成中间文件seg_xxx_data.json, token_xxx_data.json, map_xxx_data.json
         for key in out_data.keys():
             json_dump_by_line(out_data[key], ROOT_LOCAL_DATA + '{}_'.format(key) + in_file)
 

@@ -89,6 +89,7 @@ if __name__ == '__main__':
         ccf2020.conv2json()
         w2v.conv2pkl()
 
+    # 生成中间文件 seg_xxx_data.json, token_xxx_data.json, map_xxx_data.json
     if en_format:
         data_process.format_data('train', num_works=4)
         data_process.format_data('test', num_works=4)

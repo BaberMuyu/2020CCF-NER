@@ -8,6 +8,9 @@ bert base + flat + crf + fgm + swa + pu learning策略 + clue数据集 = test1�
 loss mask相关代码为pu learning策略的实现
 
 主要模块版本
+python 3.6.9
+
+torch 1.1.0
 
 transformers 3.0.2 
 

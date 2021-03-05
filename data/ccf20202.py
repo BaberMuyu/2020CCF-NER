@@ -270,7 +270,7 @@ class CCF2020DataProcess(object):
         def convert_to_token(sample):
             text = self.tokenizer.my_encode(sample['text'], max_length=self.token_max_len, add_special_tokens=True,
                                             truncation=True)
-            text_map, raw2decode = self.tokenizer.get_token_map(sample['text'])
+            text_map, raw2decode = self.tokenizer.get_token_map(sample['text']) # 后来发现Transformers模块自带生成token到字的map，不用这个恶心心的函数了
             lattice = []
             for lword in sample['lattice']:
                 if lword[0] in self.word_w2v:
